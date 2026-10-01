@@ -1,57 +1,152 @@
-# Customer Segmentation & Churn Pattern Analytics in European Banking
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from pathlib import Path
 
-## Overview
+from src.churn_analysis import (
+    high_value_metrics,
+    load_data,
+    overall_kpis,
+    prepare_segments,
+    segment_churn_summary,
+)
 
-This project combines data engineering, segmentation analysis, and dashboarding to evaluate churn risk in a European retail banking portfolio. The analysis focuses on customer segments shaped by geography, age, credit profile, tenure, and balance characteristics.
 
-## Business Problem
+DATA_PATH = Path(__file__).resolve().parent / "data" / "customer_churn_europe.csv"
 
-Banks collect large volumes of customer data but often fail to convert it into segment-level retention insights. This project addresses that gap by identifying customer groups with elevated churn risk and enabling managerial action through targeted interventions.
 
-## Dataset
+def main():
+    st.set_page_config(page_title="Bank Churn Analytics Dashboard", layout="wide")
+    st.title("European Banking Customer Segmentation & Churn Pattern Analytics")
 
-The synthetic dataset contains banking customer attributes and a churn indicator (`Exited`). It is modeled to resemble a European customer base with cross-country variation in churn behavior.
+    if not DATA_PATH.exists():
+        st.warning("Dataset not found. Run: python data/generate_data.py")
+        return
 
-## Analytical Methodology
+    df = load_data(DATA_PATH)
+    df = prepare_segments(df)
 
-1. Data ingestion and validation
-2. Feature engineering and segmentation
-3. Churn rate estimation by segment
-4. Comparison of retained vs exited profiles
-5. High-value customer analysis
-6. Dashboarding and stakeholder communication
+    st.sidebar.header("Filters")
+    geography = st.sidebar.multiselect(
+        "Geography",
+        sorted(df["Geography"].unique()),
+        default=sorted(df["Geography"].unique()),
+    )
+    genders = st.sidebar.multiselect(
+        "Gender",
+        sorted(df["Gender"].unique()),
+        default=sorted(df["Gender"].unique()),
+    )
+    age_min, age_max = st.sidebar.slider(
+        "Age range",
+        int(df["Age"].min()),
+        int(df["Age"].max()),
+        (int(df["Age"].min()), int(df["Age"].max())),
+    )
 
-## Key Segmentation Dimensions
+    filtered = df[
+        df["Geography"].isin(geography)
+        & df["Gender"].isin(genders)
+        & df["Age"].between(age_min, age_max)
+    ].copy()
 
-- Geography: France, Spain, Germany
-- Age group: `<30`, `30-45`, `46-60`, `60+`
-- Credit score band: `Low`, `Medium`, `High`
-- Tenure group: `New`, `Mid-term`, `Long-term`
-- Balance segment: `Zero-balance`, `Low-balance`, `High-balance`
+    if filtered.empty:
+        st.warning("No records match the current filter selection.")
+        return
 
-## Expected Insights
+    kpis = overall_kpis(filtered)
+    st.subheader("Executive KPI Overview")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Customers", f"{kpis['total_customers']:,}")
+    col2.metric("Overall Churn Rate", f"{kpis['overall_churn_rate']:.2%}")
+    col3.metric("High-Value Churn Ratio", f"{kpis['high_value_churn_ratio']:.2%}")
+    col4.metric("Geographic Risk Index", f"{kpis['geographic_risk_index']:.2%}")
+    col5.metric("Inactive Churn Risk", f"{kpis['engagement_drop_indicator']:.2%}")
 
-- Churn is usually higher among newly onboarded or inactive customers.
-- Inactive members exhibit a meaningful increase in churn likelihood.
-- Customer balance, age, and residence region influence churn probability.
-- High-balance customers are economically important and require retention monitoring.
+    st.markdown("---")
 
-## Strategic Recommendations
+    region_summary = (
+        filtered.groupby("Geography", as_index=False)["Exited"]
+        .agg(churn_rate="mean", customers="size")
+        .sort_values("churn_rate", ascending=False)
+    )
+    fig_geography = px.bar(
+        region_summary,
+        x="Geography",
+        y="churn_rate",
+        color="Geography",
+        title="Churn Rate by Geography",
+        text_auto=".2%",
+        labels={"churn_rate": "Churn Rate"},
+    )
 
-- Prioritize retention campaigns for inactive, short-tenure, and higher-risk geographical segments.
-- Build targeted onboarding journeys to reduce early churn.
-- Tailor premium customer management for high-balance accounts.
-- Monitor changes in churn across segments with a live dashboard.
+    age_summary = (
+        filtered.groupby("AgeGroup", as_index=False)["Exited"]
+        .agg(churn_rate="mean", customers="size")
+        .sort_values("churn_rate", ascending=False)
+    )
+    fig_age = px.bar(
+        age_summary,
+        x="AgeGroup",
+        y="churn_rate",
+        color="AgeGroup",
+        title="Churn Rate by Age Group",
+        text_auto=".2%",
+        labels={"churn_rate": "Churn Rate"},
+    )
 
-## Implementation Notes
+    tenure_summary = (
+        filtered.groupby("TenureGroup", as_index=False)["Exited"]
+        .agg(churn_rate="mean", customers="size")
+        .sort_values("churn_rate", ascending=False)
+    )
+    fig_tenure = px.bar(
+        tenure_summary,
+        x="TenureGroup",
+        y="churn_rate",
+        color="TenureGroup",
+        title="Churn Rate by Tenure Group",
+        text_auto=".2%",
+        labels={"churn_rate": "Churn Rate"},
+    )
 
-The project includes:
+    col_left, col_center, col_right = st.columns(3)
+    col_left.plotly_chart(fig_geography, use_container_width=True)
+    col_center.plotly_chart(fig_age, use_container_width=True)
+    col_right.plotly_chart(fig_tenure, use_container_width=True)
 
-- Synthetic dataset generation
-- Reusable analytical functions
-- Streamlit-based dashboard
-- Documentation for technical and executive audiences
+    st.subheader("Segment-Level Churn Analysis")
+    seg_summary = segment_churn_summary(filtered)
+    st.dataframe(seg_summary.head(25), use_container_width=True)
 
-## Conclusion
+    st.subheader("High-Value Customer Churn Explorer")
+    hv = high_value_metrics(filtered)
+    st.dataframe(hv, use_container_width=True)
 
-This project demonstrates a structured and actionable framework for identifying churn-prone segments in European banking. It supports better retention planning and more efficient allocation of marketing and customer success resources.
+    st.subheader("Customer Profile Comparison")
+    comp = filtered.assign(ChurnStatus=np.where(filtered["Exited"] == 1, "Exited", "Retained"))
+    profile_fig = px.histogram(
+        comp,
+        x="Balance",
+        color="ChurnStatus",
+        barmode="overlay",
+        title="Balance Distribution by Churn Status",
+        nbins=35,
+    )
+    st.plotly_chart(profile_fig, use_container_width=True)
+
+    st.subheader("Salary vs Balance Relationship")
+    scatter_fig = px.scatter(
+        comp,
+        x="EstimatedSalary",
+        y="Balance",
+        color="ChurnStatus",
+        title="Estimated Salary vs Balance by Churn Status",
+        opacity=0.7,
+    )
+    st.plotly_chart(scatter_fig, use_container_width=True)
+
+
+if __name__ == "__main__":
+    main()
